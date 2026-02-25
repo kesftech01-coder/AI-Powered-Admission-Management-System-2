@@ -1,0 +1,58 @@
+# .gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+*.db
+*.sqlite3
+*.csv
+*.xlsx
+!sample_data/
+data/raw/
+data/processed/
+
+# Models
+models/saved/
+*.h5
+*.pkl
+*.joblib
+
+# Config
+config/local.py
+config/credentials.py
+*.key
+*.pem
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
