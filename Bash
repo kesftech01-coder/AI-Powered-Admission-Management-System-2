@@ -1,0 +1,10 @@
+# Create project directory
+mkdir admission-ai-manager
+cd admission-ai-manager
+
+# Initialize git repository
+git init
+
+# Create initial structure
+mkdir -p {src,data,models,tests,docs,config,scripts}
+touch README.md .gitignore requirements.txt setup.py
