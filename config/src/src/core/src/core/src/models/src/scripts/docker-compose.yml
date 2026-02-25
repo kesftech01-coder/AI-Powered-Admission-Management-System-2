@@ -1,0 +1,72 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/admission_db
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongo:27017/admission
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    depends_on:
+      - db
+      - redis
+      - mongo
+    networks:
+      - admission-network
+
+  db:
+    image: postgres:14
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=admission_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - admission-network
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - admission-network
+
+  mongo:
+    image: mongo:6
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - admission-network
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - app
+    networks:
+      - admission-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  mongo-data:
+
+networks:
+  admission-network:
+    driver: bridge
