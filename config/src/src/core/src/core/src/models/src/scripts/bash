@@ -1,0 +1,26 @@
+# Initialize git (if not done already)
+git init
+
+# Add all files
+git add .
+
+# Create initial commit
+git commit -m "Initial commit: Admission AI Manager project structure"
+
+# Create development branch
+git checkout -b develop
+
+# Add remote repository
+git remote add origin https://github.com/yourusername/admission-ai-manager.git
+
+# Push to main branch
+git push -u origin main
+
+# Push develop branch
+git push -u origin develop
+
+# Create feature branches
+git checkout -b feature/ai-evaluator
+git checkout -b feature/api-endpoints
+git checkout -b feature/frontend-dashboard
+git checkout -b feature/document-processing
