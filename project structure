@@ -1,0 +1,15 @@
+admission-ai-manager/
+├── src/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── api/
+│   ├── core/
+│   ├── models/
+│   ├── services/
+│   └── utils/
+├── tests/
+├── docs/
+├── config/
+├── data/
+├── scripts/
+└── models/
