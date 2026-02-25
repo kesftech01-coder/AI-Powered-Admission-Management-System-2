@@ -1,142 +1,196 @@
-"""Application database models."""
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, JSON, ForeignKey
-from sqlalchemy.orm import relationship
+"""Applications API endpoints."""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from sqlalchemy.orm import Session
+from typing import List, Optional
+import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
 
-from src.core.database import Base
+from src.core.database import get_db
+from src.models.application import Application, ApplicationCreate, ApplicationUpdate, ApplicationResponse
+from src.services.ai_evaluator import ai_evaluator
+from src.services.document_processor import document_processor
+from src.services.notification import notification_service
+from src.core.auth import get_current_user
+from src.models.user import User
 
-# SQLAlchemy Models
-class Application(Base):
-    """Application model."""
-    
-    __tablename__ = "applications"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    application_id = Column(String(50), unique=True, index=True, nullable=False)
-    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False)
-    applicant_id = Column(Integer, ForeignKey("applicants.id"), nullable=False)
-    
-    # Personal Information
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100), nullable=False)
-    email = Column(String(255), nullable=False, index=True)
-    phone = Column(String(20))
-    date_of_birth = Column(DateTime)
-    nationality = Column(String(100))
-    
-    # Academic Information
-    gpa = Column(Float)
-    test_scores = Column(JSON)  # SAT, GRE, TOEFL, etc.
-    education_history = Column(JSON)  # List of previous education
-    work_experience = Column(JSON)  # List of work experience
-    
-    # Documents
-    documents = Column(JSON)  # References to uploaded documents
-    personal_statement = Column(Text)
-    recommendation_letters = Column(JSON)
-    
-    # Application Status
-    status = Column(String(50), default="submitted")  # submitted, under_review, accepted, rejected, waitlisted
-    submission_date = Column(DateTime, default=datetime.utcnow)
-    review_date = Column(DateTime, nullable=True)
-    decision_date = Column(DateTime, nullable=True)
-    
-    # AI Analysis
-    ai_score = Column(Float, nullable=True)  # Overall AI score (0-100)
-    ai_confidence = Column(Float, nullable=True)  # AI confidence level
-    ai_analysis = Column(JSON)  # Detailed AI analysis
-    ai_recommendation = Column(String(50))  # AI recommendation
-    
-    # Review
-    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    reviewer_notes = Column(Text)
-    final_decision = Column(String(50))
-    
-    # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_by = Column(Integer, ForeignKey("users.id"))
-    
-    # Relationships
-    program = relationship("Program", back_populates="applications")
-    applicant = relationship("Applicant", back_populates="applications")
-    reviewer = relationship("User", foreign_keys=[reviewer_id])
-    status_history = relationship("ApplicationStatus", back_populates="application")
-    
-    class Config:
-        """Pydantic config."""
-        from_attributes = True
+router = APIRouter()
 
-class ApplicationStatus(Base):
-    """Application status history."""
+@router.post("/", response_model=ApplicationResponse)
+async def create_application(
+    application: ApplicationCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create new application."""
+    # Generate unique application ID
+    app_id = f"APP{datetime.utcnow().strftime('%Y%m%d')}{uuid.uuid4().hex[:6].upper()}"
     
-    __tablename__ = "application_status"
+    # Create application record
+    db_application = Application(
+        application_id=app_id,
+        **application.dict(),
+        created_by=current_user.id
+    )
     
-    id = Column(Integer, primary_key=True, index=True)
-    application_id = Column(Integer, ForeignKey("applications.id"))
-    status = Column(String(50))
-    notes = Column(Text)
-    created_by = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    db.add(db_application)
+    db.commit()
+    db.refresh(db_application)
     
-    application = relationship("Application", back_populates="status_history")
+    # Trigger AI evaluation in background
+    background_tasks.add_task(
+        process_application_ai,
+        db_application.id,
+        db
+    )
+    
+    return db_application
 
-# Pydantic Models
-class ApplicationBase(BaseModel):
-    """Base application schema."""
+@router.get("/", response_model=List[ApplicationResponse])
+async def get_applications(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    program_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get all applications with filters."""
+    query = db.query(Application)
     
-    first_name: str
-    last_name: str
-    email: str
-    phone: Optional[str] = None
-    date_of_birth: Optional[datetime] = None
-    nationality: Optional[str] = None
-    gpa: Optional[float] = None
-    test_scores: Optional[Dict[str, Any]] = None
-    education_history: Optional[list] = None
-    work_experience: Optional[list] = None
-    personal_statement: Optional[str] = None
-    program_id: int
+    if status:
+        query = query.filter(Application.status == status)
+    if program_id:
+        query = query.filter(Application.program_id == program_id)
     
-    @validator('email')
-    def validate_email(cls, v):
-        """Validate email format."""
-        if '@' not in v:
-            raise ValueError('Invalid email format')
-        return v.lower()
-    
-    @validator('gpa')
-    def validate_gpa(cls, v):
-        """Validate GPA range."""
-        if v is not None and (v < 0 or v > 4.0):
-            raise ValueError('GPA must be between 0 and 4.0')
-        return v
+    applications = query.offset(skip).limit(limit).all()
+    return applications
 
-class ApplicationCreate(ApplicationBase):
-    """Application creation schema."""
-    pass
+@router.get("/{application_id}", response_model=ApplicationResponse)
+async def get_application(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get application by ID."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return application
 
-class ApplicationUpdate(BaseModel):
-    """Application update schema."""
+@router.put("/{application_id}", response_model=ApplicationResponse)
+async def update_application(
+    application_id: int,
+    application_update: ApplicationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Update application."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
     
-    status: Optional[str] = None
-    reviewer_notes: Optional[str] = None
-    final_decision: Optional[str] = None
+    for key, value in application_update.dict(exclude_unset=True).items():
+        setattr(application, key, value)
+    
+    application.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(application)
+    
+    return application
 
-class ApplicationResponse(ApplicationBase):
-    """Application response schema."""
+@router.post("/{application_id}/documents")
+async def upload_document(
+    application_id: int,
+    file: UploadFile = File(...),
+    document_type: str = "general",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload document for application."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
     
-    id: int
-    application_id: str
-    status: str
-    submission_date: datetime
-    ai_score: Optional[float] = None
-    ai_recommendation: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    # Process document
+    result = await document_processor.process_document(file, document_type)
     
-    class Config:
-        """Pydantic config."""
-        from_attributes = True
+    # Update application documents
+    documents = application.documents or []
+    documents.append({
+        'filename': file.filename,
+        'type': document_type,
+        'uploaded_at': datetime.utcnow().isoformat(),
+        'analysis': result
+    })
+    application.documents = documents
+    
+    db.commit()
+    
+    return {"message": "Document uploaded successfully", "analysis": result}
+
+@router.post("/{application_id}/evaluate")
+async def evaluate_application(
+    application_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Trigger AI evaluation for application."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    background_tasks.add_task(
+        process_application_ai,
+        application_id,
+        db
+    )
+    
+    return {"message": "AI evaluation started"}
+
+@router.post("/{application_id}/decision")
+async def make_decision(
+    application_id: int,
+    decision: str,
+    notes: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Make final decision on application."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    application.final_decision = decision
+    application.reviewer_notes = notes
+    application.reviewer_id = current_user.id
+    application.decision_date = datetime.utcnow()
+    application.status = "decided"
+    
+    db.commit()
+    
+    # Send notification
+    await notification_service.send_decision_notification(
+        application.email,
+        application.first_name,
+        decision
+    )
+    
+    return {"message": f"Application {decision}"}
+
+async def process_application_ai(application_id: int, db: Session):
+    """Background task for AI evaluation."""
+    application = db.query(Application).filter(Application.id == application_id).first()
+    if application:
+        # Run AI evaluation
+        result = await ai_evaluator.evaluate_application(application)
+        
+        # Update application with AI results
+        application.ai_score = result.get('overall_score')
+        application.ai_confidence = result.get('confidence')
+        application.ai_analysis = result.get('analysis')
+        application.ai_recommendation = result.get('recommendation')
+        
+        db.commit()
